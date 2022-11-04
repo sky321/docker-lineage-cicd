@@ -1,5 +1,5 @@
-FROM debian:stretch
-MAINTAINER Nicola Corna <nicola@corna.info>
+FROM ubuntu:22.04@sha256:20fa2d7bb4de7723f542be5923b06c4d704370f0390e4ae9e1c833c8785644c1
+LABEL maintainer="Nicola Corna <nicola@corna.info>"
 
 # Environment variables
 #######################
@@ -10,7 +10,6 @@ ENV TMP_DIR /srv/tmp
 ENV CCACHE_DIR /srv/ccache
 ENV ZIP_DIR /srv/zips
 ENV LMANIFEST_DIR /srv/local_manifests
-ENV DELTA_DIR /srv/delta
 ENV KEYS_DIR /srv/keys
 ENV LOGS_DIR /srv/logs
 ENV USERSCRIPTS_DIR /srv/userscripts
@@ -30,9 +29,12 @@ ENV USE_CCACHE 1
 # for no limit.
 ENV CCACHE_SIZE 50G
 
+# We need to specify the ccache binary since it is no longer packaged along with AOSP
+ENV CCACHE_EXEC /usr/bin/ccache
+
 # Environment for the LineageOS branches name
-# See https://github.com/LineageOS/android_vendor_cm/branches for possible options
-ENV BRANCH_NAME 'cm-14.1'
+# See https://github.com/LineageOS/android/branches for possible options
+ENV BRANCH_NAME 'lineage-16.0'
 
 # Environment for the device list (separate by comma if more than one)
 # eg. DEVICE_LIST=hammerhead,bullhead,angler
@@ -49,7 +51,7 @@ ENV OTA_URL ''
 ENV USER_NAME 'LineageOS Buildbot'
 ENV USER_MAIL 'lineageos-buildbot@docker.host'
 
-# Include proprietary files, downloaded automatically from github.com/TheMuppets/
+# Include proprietary files, downloaded automatically from github.com/TheMuppets/ and gitlab.com/the-muppets/
 # Only some branches are supported
 ENV INCLUDE_PROPRIETARY true
 
@@ -102,28 +104,19 @@ ENV LOGS_SUBDIR true
 # example.
 ENV SIGNATURE_SPOOFING "no"
 
-# Generate delta files
-ENV BUILD_DELTA false
-
 # Delete old zips in $ZIP_DIR, keep only the N latest one (0 to disable)
 ENV DELETE_OLD_ZIPS 0
-
-# Delete old deltas in $DELTA_DIR, keep only the N latest one (0 to disable)
-ENV DELETE_OLD_DELTAS 0
 
 # Delete old logs in $LOGS_DIR, keep only the N latest one (0 to disable)
 ENV DELETE_OLD_LOGS 0
 
-# Create a JSON file that indexes the build zips at the end of the build process
-# (for the updates in OpenDelta). The file will be created in $ZIP_DIR with the
-# specified name; leave empty to skip it.
-# Requires ZIP_SUBDIR.
-ENV OPENDELTA_BUILDS_JSON ''
+# build type of your builds (user|userdebug|eng)
+ENV BUILD_TYPE "userdebug"
 
 # You can optionally specify a USERSCRIPTS_DIR volume containing these scripts:
 #  * begin.sh, run at the very beginning
 #  * before.sh, run after the syncing and patching, before starting the builds
-#  * pre-build.sh, run before the build of every device 
+#  * pre-build.sh, run before the build of every device
 #  * post-build.sh, run after the build of every device
 #  * end.sh, run at the very end
 # Each script will be run in $SRC_DIR and must be owned and writeable only by
@@ -137,64 +130,38 @@ VOLUME $TMP_DIR
 VOLUME $CCACHE_DIR
 VOLUME $ZIP_DIR
 VOLUME $LMANIFEST_DIR
-VOLUME $DELTA_DIR
 VOLUME $KEYS_DIR
 VOLUME $LOGS_DIR
 VOLUME $USERSCRIPTS_DIR
 
-# Copy required files
-#####################
-COPY src/ /root/
-
 # Create missing directories
 ############################
-RUN mkdir -p $MIRROR_DIR
-RUN mkdir -p $SRC_DIR
-RUN mkdir -p $TMP_DIR
-RUN mkdir -p $CCACHE_DIR
-RUN mkdir -p $ZIP_DIR
-RUN mkdir -p $LMANIFEST_DIR
-RUN mkdir -p $DELTA_DIR
-RUN mkdir -p $KEYS_DIR
-RUN mkdir -p $LOGS_DIR
-RUN mkdir -p $USERSCRIPTS_DIR
+RUN mkdir -p $MIRROR_DIR $SRC_DIR $TMP_DIR $CCACHE_DIR $ZIP_DIR $LMANIFEST_DIR \
+      $KEYS_DIR $LOGS_DIR $USERSCRIPTS_DIR
 
 # Install build dependencies
 ############################
-RUN echo 'deb http://deb.debian.org/debian sid main' >> /etc/apt/sources.list
-RUN echo 'deb http://deb.debian.org/debian experimental main' >> /etc/apt/sources.list
-COPY apt_preferences /etc/apt/preferences
-RUN apt-get -qq update
-RUN apt-get -qqy upgrade
+RUN apt-get -qq update && \
+      apt-get install -y bc bison bsdmainutils build-essential ccache cgpt clang \
+      cron curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick \
+      kmod lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool \
+      libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
+      libxml2-utils lsof lzop maven openjdk-8-jdk pngcrush procps python3 \
+      python-is-python3 rsync schedtool squashfs-tools wget xdelta3 xsltproc yasm zip \
+      zlib1g-dev \
+      && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get install -y bc bison bsdmainutils build-essential ccache cgpt cron \
-      curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick \
-      lib32ncurses5-dev lib32readline-dev lib32z1-dev libesd0-dev liblz4-tool \
-      libncurses5-dev libsdl1.2-dev libssl-dev libwxgtk3.0-dev libxml2 \
-      libxml2-utils lsof lzop maven openjdk-7-jdk openjdk-8-jdk pngcrush \
-      procps python rsync schedtool squashfs-tools wget xdelta3 xsltproc yasm \
-      zip zlib1g-dev
+RUN curl https://storage.googleapis.com/git-repo-downloads/repo > /usr/local/bin/repo && \
+      chmod a+x /usr/local/bin/repo
 
-RUN curl https://storage.googleapis.com/git-repo-downloads/repo > /usr/local/bin/repo
-RUN chmod a+x /usr/local/bin/repo
+# Re-enable TLSv1 and TLSv1.1 in OpenJDK 8 config
+#(for cm-14.1/lineage-15.1, might be removed later)
+###################################################
+RUN echo "jdk.tls.disabledAlgorithms=SSLv3, RC4, DES, MD5withRSA, DH keySize < 1024, EC keySize < 224, 3DES_EDE_CBC, anon, NULL, include jdk.disabled.namedCurves" | tee -a /etc/java-8-openjdk/security/java.security
 
-# Download and build delta tools
-################################
-RUN cd /root/ && \
-        mkdir delta && \
-        git clone --depth=1 https://github.com/omnirom/android_packages_apps_OpenDelta.git OpenDelta && \
-        gcc -o delta/zipadjust OpenDelta/jni/zipadjust.c OpenDelta/jni/zipadjust_run.c -lz && \
-        cp OpenDelta/server/minsignapk.jar OpenDelta/server/opendelta.sh delta/ && \
-        chmod +x delta/opendelta.sh && \
-        rm -rf OpenDelta/ && \
-        sed -i -e 's|^\s*HOME=.*|HOME=/root|; \
-                   s|^\s*BIN_XDELTA=.*|BIN_XDELTA=xdelta3|; \
-                   s|^\s*FILE_MATCH=.*|FILE_MATCH=lineage-\*.zip|; \
-                   s|^\s*PATH_CURRENT=.*|PATH_CURRENT=$SRC_DIR/out/target/product/$DEVICE|; \
-                   s|^\s*PATH_LAST=.*|PATH_LAST=$SRC_DIR/delta_last/$DEVICE|; \
-                   s|^\s*KEY_X509=.*|KEY_X509=$KEYS_DIR/releasekey.x509.pem|; \
-                   s|^\s*KEY_PK8=.*|KEY_PK8=$KEYS_DIR/releasekey.pk8|; \
-                   s|publish|$DELTA_DIR|g' /root/delta/opendelta.sh
+# Copy required files
+#####################
+COPY src/ /root/
 
 # Set the work directory
 ########################

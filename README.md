@@ -1,6 +1,6 @@
 # docker-lineage-cicd
 
-Docker microservice for LineageOS Continuous Integration and Continous Deployment
+Docker microservice for LineageOS Continuous Integration and Continuous Deployment
 
 ## Why Docker?
 
@@ -42,7 +42,7 @@ TL;DR - go to the [Examples](#examples)
 
 The two fundamental settings are:
 
- * `BRANCH_NAME (cm-14.1)`: LineageOS branch, see the branch list
+ * `BRANCH_NAME (lineage-16.0)`: LineageOS branch, see the branch list
     [here][los-branches] (multiple comma-separated branches can be specified)
  * `DEVICE_LIST`: comma-separated list of devices to build
 
@@ -51,6 +51,42 @@ to the LineageOS official builds, just signed with the test keys.
 
 When multiple branches are selected, use `DEVICE_LIST_<BRANCH_NAME>` to specify
 the list of devices for each specific branch (see [the examples](#examples)).
+
+### GMS / microG
+
+To include microG (or possibly the actual Google Mobile Services) in your build,
+LineageOS expects certain Makefiles in `vendor/partner_gms` and variable
+`WITH_GMS` set to `true`.
+
+[This][android_vendor_partner_gms] repo contains the common packages included for
+official lineageos4microg builds. To include it in your build, create an XML
+(the name is irrelevant, as long as it ends with `.xml`) in the
+`/home/user/manifests` folder with this content:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+    <project path="vendor/partner_gms" name="lineageos4microg/android_vendor_partner_gms" remote="github" revision="master" />
+</manifest>
+```
+
+### Additional custom apps
+
+If you wish to add other apps to your ROM, you can include a repository with
+source code or prebuilt APKs. For prebuilt apks, see the [android_vendor_partner_gms][android_vendor_partner_gms]
+repository for examples on how the `Android.mk` file should look like. 
+
+Include the repo with another manifest file like this:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <project name="your-github-user/your-repo" path="prebuilts/my-custom-apps" remote="github" revision="master" />
+</manifest>
+```
+
+And when starting the build, set the `CUSTOM_PACKAGES` variable to a list of app names
+(defined by `LOCAL_MODULE` in `Android.mk`) separated by spaces.
 
 ### Signature spoofing
 
@@ -74,12 +110,9 @@ The signature spoofing patch can be optionally included with:
     the restricted one, `no` for none of them
 
 If in doubt, use `restricted`: note that packages that requires the
-FAKE_SIGNATURE permission must be embedded in the build by adding them in
+FAKE_SIGNATURE permission must be included in the build as system apps
+(e.g. as part of GMS or `CUSTOM_PACKAGES`)
 
- * `CUSTOM_PACKAGES`
-
-Extra packages can be included in the tree by adding the corresponding manifest
-XML to the local_manifests volume.
 
 ### Proprietary files
 
@@ -89,18 +122,29 @@ three ways:
 
  * by [pulling them from a running LineageOS][blobs-pull]
  * by [extracting them from a LineageOS ZIP][blobs-extract]
- * by downloading them from [TheMuppets repos][blobs-themuppets] (unofficial)
+ * by downloading them from TheMuppets [GitHub][blobs-themuppets] and
+   [GitLab][blobs-the-muppets] repositories (unofficial)
 
 The third way is the easiest one and is enabled by default; if you're OK with
 that just move on, otherwise set `INCLUDE_PROPRIETARY (true)` to `false` and
 manually provide the blobs (not explained in this guide).
 
-### OTA
+### Over the Air updates
 
-If you have a server and you want to enable [OTA updates][lineageota] you have
-to provide the URL of your server during the build process with:
+To enable OTA for you builds, you need to run a server that speaks the protocol
+understood by the [LineageOS updater app][updater] and provide the URL to this
+server as `OTA_URL` variable for the build.
 
- * `OTA_URL`
+One implementation is [LineageOTA][lineageota], which is also available as Docker
+image. Follow these steps to prepare your builds for OTA:
+
+* Run the Docker image `julianxhokaxhiu/lineageota`
+  * Port 80 exposed to the internet (might want to add an HTTPS reverse proxy)
+  * The `/srv/zips` directory/volume of the CICD image mounted at
+    `/var/www/html/builds/full` (can be read-only)
+* Set environment variables when building
+  * `ZIP_SUBDIR` to `false`
+  * `OTA_URL` to the address of the OTA server, with `/api` appended
 
 If you don't setup a OTA server you won't be able to update the device from the
 updater app (but you can still update it manually with the recovery of course).
@@ -121,8 +165,9 @@ Other useful settings are:
     ccache
  * `WITH_SU (false)`: set to `true` to embed `su` in the build (note that, even
     when set to `false`, you can still enable root by flashing the
-    [su installable ZIP][los-extras])
+    [su installable ZIP][los-extras]). This is only for lineage version 16 and below.
  * `RELEASE_TYPE (UNOFFICIAL)`: change the release type of your builds
+ * `BUILD_TYPE (userdebug)`: type of your builds, see [Android docs](https://source.android.com/setup/build/building#choose-a-target)
  * `BUILD_OVERLAY (false)`: normally each build is done on the source tree, then
     the tree is cleaned with `mka clean`. If you want to be sure that each build
     is isolated from the others, set `BUILD_OVERLAY` to `true` (longer build
@@ -131,6 +176,10 @@ Other useful settings are:
     mirror of the LineageOS source (> 200 GB)
  * `CRONTAB_TIME (now)`: instead of building immediately and exit, build at the
     specified time (uses standard cron format)
+ * `ZIP_SUBDIR (true)`: Move the resulting zips to $ZIP_DIR/$codename instead of $ZIP_DIR/
+ * `PARALLEL_JOBS`: Limit the number of parallel jobs to run (`-j` for `repo sync` and `mka`).
+   By default, the build system should match the number of parallel jobs to the number of cpu
+   cores on your machine. Reducing this number can help keeping it responsive for other tasks.   
 
 The full list of settings, including the less interesting ones not mentioned in
 this guide, can be found in the [Dockerfile][dockerfile].
@@ -161,12 +210,12 @@ When `LOCAL_MIRROR` is `true`:
 
 ## Examples
 
-### Build for thea (cm-14.1, officially supported), test keys, no patches
+### Build for river (lineage-18.1, officially supported), test keys, no patches
 
-```
+```sh
 docker run \
-    -e "BRANCH_NAME=cm-14.1" \
-    -e "DEVICE_LIST=thea" \
+    -e "BRANCH_NAME=lineage-18.1" \
+    -e "DEVICE_LIST=river" \
     -v "/home/user/lineage:/srv/src" \
     -v "/home/user/zips:/srv/zips" \
     -v "/home/user/logs:/srv/logs" \
@@ -174,15 +223,15 @@ docker run \
     lineageos4microg/docker-lineage-cicd
 ```
 
-### Build for dumpling (lineage-15.1, officially supported), custom keys, restricted signature spoofing with integrated microG and FDroid
+### Build for bacon (lineage-17.1, officially supported), custom keys, restricted signature spoofing with integrated microG and FDroid
 
-```
+```sh
 docker run \
-    -e "BRANCH_NAME=lineage-15.1" \
-    -e "DEVICE_LIST=dumpling" \
+    -e "BRANCH_NAME=lineage-17.1" \
+    -e "DEVICE_LIST=bacon" \
     -e "SIGN_BUILDS=true" \
     -e "SIGNATURE_SPOOFING=restricted" \
-    -e "CUSTOM_PACKAGES=GmsCore GsfProxy FakeStore MozillaNlpBackend NominatimNlpBackend com.google.android.maps.jar FDroid FDroidPrivilegedExtension " \
+    -e "WITH_GMS=true" \
     -v "/home/user/lineage:/srv/src" \
     -v "/home/user/zips:/srv/zips" \
     -v "/home/user/logs:/srv/logs" \
@@ -197,28 +246,19 @@ new set will be generated before starting the build (and will be used for every
 subsequent build).
 
 The microG and FDroid packages are not present in the LineageOS repositories,
-and must be provided through an XML in the `/home/user/manifests`.
-[This][prebuiltapks] repo contains some of the most common packages for these
-kind of builds: to include it create an XML (the name is irrelevant, as long as
-it ends with `.xml`) in the `/home/user/manifests` folder with this content:
+and must be provided e.g. through [android_vendor_partner_gms][android_vendor_partner_gms].
 
-```
-<?xml version="1.0" encoding="UTF-8"?>
-<manifest>
-  <project name="lineageos4microg/android_prebuilts_prebuiltapks" path="prebuilts/prebuiltapks" remote="github" revision="master" />
-</manifest>
-```
 
-### Build for four devices on cm-14.1 and lineage-15.1 (officially supported), custom keys, restricted signature spoofing with integrated microG and FDroid, custom OTA server
+### Build for four devices on lineage-17.1 and lineage-18.1 (officially supported), custom keys, restricted signature spoofing with integrated microG and FDroid, custom OTA server
 
-```
+```sh
 docker run \
-    -e "BRANCH_NAME=cm-14.1,lineage-15.1" \
-    -e "DEVICE_LIST_CM_14_1=onyx,thea" \
-    -e "DEVICE_LIST_LINEAGE_15_1=cheeseburger,dumpling" \
+    -e "BRANCH_NAME=lineage-17.1,lineage-18.1" \
+    -e "DEVICE_LIST_LINEAGE_17_1=bacon,oneplus2" \
+    -e "DEVICE_LIST_LINEAGE_18_1=river,lake" \
     -e "SIGN_BUILDS=true" \
     -e "SIGNATURE_SPOOFING=restricted" \
-    -e "CUSTOM_PACKAGES=GmsCore GsfProxy FakeStore MozillaNlpBackend NominatimNlpBackend com.google.android.maps.jar FDroid FDroidPrivilegedExtension " \
+    -e "WITH_GMS=true" \
     -e "OTA_URL=https://api.myserver.com/" \
     -v "/home/user/lineage:/srv/src" \
     -v "/home/user/zips:/srv/zips" \
@@ -245,7 +285,7 @@ Then, with the help of lineage.dependencies from the
 [common tree][a6000-common-tree-deps] we create an XML
 `/home/user/manifests/a6000.xml` with this content:
 
-```
+```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
   <project name="dev-harsh1998/android_device_lenovo_a6000" path="device/lenovo/a6000" remote="github" />
@@ -256,13 +296,13 @@ Then, with the help of lineage.dependencies from the
 </manifest>
 ```
 
-We also want to include our custom packages so, like before, create an XML (for
-example `/home/user/manifests/custom_packages.xml`) with this content:
+We also want to include microG so, like before, create an XML (for
+example `/home/user/manifests/microg.xml`) with this content:
 
-```
+```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <manifest>
-  <project name="lineageos4microg/android_prebuilts_prebuiltapks" path="prebuilts/prebuiltapks" remote="github" revision="master" />
+    <project path="vendor/partner_gms" name="lineageos4microg/android_vendor_partner_gms" remote="github" revision="master" />
 </manifest>
 ```
 
@@ -273,13 +313,13 @@ don't have to include the TheMuppets repo).
 
 Now we can just run the build like it was officially supported:
 
-```
+```sh
 docker run \
     -e "BRANCH_NAME=lineage-15.1" \
     -e "DEVICE_LIST=a6000" \
     -e "SIGN_BUILDS=true" \
     -e "SIGNATURE_SPOOFING=restricted" \
-    -e "CUSTOM_PACKAGES=GmsCore GsfProxy FakeStore MozillaNlpBackend NominatimNlpBackend com.google.android.maps.jar FDroid FDroidPrivilegedExtension " \
+    -e "WITH_GMS=true" \
     -e "INCLUDE_PROPRIETARY=false" \
     -v "/home/user/lineage:/srv/src" \
     -v "/home/user/zips:/srv/zips" \
@@ -306,11 +346,12 @@ docker run \
 [blobs-pull]: https://wiki.lineageos.org/devices/bacon/build#extract-proprietary-blobs
 [blobs-extract]: https://wiki.lineageos.org/extracting_blobs_from_zips.html
 [blobs-themuppets]: https://github.com/TheMuppets/manifests
+[blobs-the-muppets]: https://gitlab.com/the-muppets/manifest
 [lineageota]: https://github.com/julianxhokaxhiu/LineageOTA
+[updater]: https://github.com/LineageOS/android_packages_apps_Updater
 [los-extras]: https://download.lineageos.org/extras
 [dockerfile]: Dockerfile
-[prebuiltapks]: https://github.com/lineageos4microg/android_prebuilts_prebuiltapks
+[android_vendor_partner_gms]: https://github.com/lineageos4microg/android_vendor_partner_gms
 [a6000-xda]: https://forum.xda-developers.com/lenovo-a6000/development/rom-lineageos-15-1-t3733747
 [a6000-device-tree-deps]: https://github.com/dev-harsh1998/android_device_lenovo_a6000/blob/lineage-15.1/lineage.dependencies
 [a6000-common-tree-deps]: https://github.com/dev-harsh1998/android_device_lenovo_msm8916-common/blob/lineage-15.1/lineage.dependencies
-
