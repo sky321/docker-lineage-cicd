@@ -73,7 +73,7 @@ if [ "$LOCAL_MIRROR" = true ]; then
 
   if [ ! -d .repo ]; then
     echo ">> [$(date)] Initializing mirror repository" | tee -a "$repo_log"
-    ( yes||: ) | repo init -u https://github.com/LineageOS/mirror --mirror --no-clone-bundle -p linux &>> "$repo_log"
+    ( yes||: ) | repo init -u https://github.com/LineageOS/mirror --mirror --no-clone-bundle -p linux --git-lfs &>> "$repo_log"
   fi
 
   # Copy local manifests to the appropriate folder in order take them into consideration
@@ -136,6 +136,12 @@ for branch in ${BRANCH_NAME//,/ }; do
         frameworks_base_patch="android_frameworks_base-S.patch"
         modules_permission_patch="packages_modules_Permission-S.patch"
         ;;
+      lineage-20.0*)
+        themuppets_branch="lineage-20.0"
+        android_version="13"
+        frameworks_base_patch="android_frameworks_base-Android13.patch"
+        modules_permission_patch="packages_modules_Permission-Android13.patch"
+        ;;
       *)
         echo ">> [$(date)] Building branch $branch is not (yet) suppported"
         exit 1
@@ -163,9 +169,9 @@ for branch in ${BRANCH_NAME//,/ }; do
 
     echo ">> [$(date)] (Re)initializing branch repository" | tee -a "$repo_log"
     if [ "$LOCAL_MIRROR" = true ]; then
-      ( yes||: ) | repo init -u https://github.com/LineageOS/android.git --reference "$MIRROR_DIR" -b "$branch" &>> "$repo_log"
+      ( yes||: ) | repo init -u https://github.com/LineageOS/android.git --reference "$MIRROR_DIR" -b "$branch" --git-lfs &>> "$repo_log"
     else
-      ( yes||: ) | repo init -u https://github.com/LineageOS/android.git -b "$branch" &>> "$repo_log"
+      ( yes||: ) | repo init -u https://github.com/LineageOS/android.git -b "$branch" --git-lfs &>> "$repo_log"
     fi
 
     # Copy local manifests to the appropriate folder in order take them into consideration
@@ -243,13 +249,24 @@ for branch in ${BRANCH_NAME//,/ }; do
     # Set a custom updater URI if a OTA URL is provided
     echo ">> [$(date)] Adding OTA URL overlay (for custom URL $OTA_URL)"
     if [ -n "$OTA_URL" ]; then
-      updater_url_overlay_dir="vendor/$vendor/overlay/microg/packages/apps/Updater/res/values/"
+      if [ -d "packages/apps/Updater/app/src/main/res/values" ]; then
+        # "New" Updater project structure
+        updater_values_dir="packages/apps/Updater/app/src/main/res/values"
+      elif [ -d "packages/apps/Updater/res/values" ]; then
+        # "Old" Updater project structure
+        updater_values_dir="packages/apps/Updater/res/values"
+      else
+        echo ">> [$(date)] ERROR: no 'values' dir of Updater app found"
+        exit 1
+      fi
+
+      updater_url_overlay_dir="vendor/$vendor/overlay/microg/${updater_values_dir}/"
       mkdir -p "$updater_url_overlay_dir"
 
-      if grep -q updater_server_url packages/apps/Updater/res/values/strings.xml; then
+      if grep -q updater_server_url ${updater_values_dir}/strings.xml; then
         # "New" updater configuration: full URL (with placeholders {device}, {type} and {incr})
         sed "s|{name}|updater_server_url|g; s|{url}|$OTA_URL/v1/{device}/{type}/{incr}|g" /root/packages_updater_strings.xml > "$updater_url_overlay_dir/strings.xml"
-      elif grep -q conf_update_server_url_def packages/apps/Updater/res/values/strings.xml; then
+      elif grep -q conf_update_server_url_def ${updater_values_dir}/strings.xml; then
         # "Old" updater configuration: just the URL
         sed "s|{name}|conf_update_server_url_def|g; s|{url}|$OTA_URL|g" /root/packages_updater_strings.xml > "$updater_url_overlay_dir/strings.xml"
       else
@@ -326,6 +343,11 @@ for branch in ${BRANCH_NAME//,/ }; do
         set -eu
         if [ $breakfast_returncode -ne 0 ]; then
             echo ">> [$(date)] breakfast failed for $codename, $branch branch" | tee -a "$DEBUG_LOG"
+            # call post-build.sh so the failure is logged in a way that is more visible
+            if [ -f /root/userscripts/post-build.sh ]; then
+              echo ">> [$(date)] Running post-build.sh for $codename" >> "$DEBUG_LOG"
+              /root/userscripts/post-build.sh "$codename" false "$branch" &>> "$DEBUG_LOG" || echo ">> [$(date)] Warning: post-build.sh failed!"
+            fi
             continue
         fi
 
@@ -342,19 +364,25 @@ for branch in ${BRANCH_NAME//,/ }; do
           # Move produced ZIP files to the main OUT directory
           echo ">> [$(date)] Moving build artifacts for $codename to '$ZIP_DIR/$zipsubdir'" | tee -a "$DEBUG_LOG"
           cd out/target/product/"$codename"
+          files_to_hash=()
           for build in lineage-*.zip; do
-            sha256sum "$build" > "$ZIP_DIR/$zipsubdir/$build.sha256sum"
-            md5sum "$build" > "$ZIP_DIR/$zipsubdir/$build.md5sum"
             cp -v system/build.prop "$ZIP_DIR/$zipsubdir/$build.prop" &>> "$DEBUG_LOG"
             mv "$build" "$ZIP_DIR/$zipsubdir/" &>> "$DEBUG_LOG"
+            files_to_hash+=( "$build" )
           done
-          recovery_name="lineage-$los_ver-$builddate-$RELEASE_TYPE-$codename-recovery.img"
-          for image in recovery boot; do
+          cd "$source_dir/out/target/product/$codename/obj/PACKAGING/target_files_intermediates/lineage_$codename-target_files-eng.root/IMAGES/"
+          for image in recovery boot vendor_boot dtbo super_empty vbmeta vendor_kernel_boot; do
             if [ -f "$image.img" ]; then
-              cp "$image.img" "$ZIP_DIR/$zipsubdir/$recovery_name"
-              break
+              recovery_name="lineage-$los_ver-$builddate-$RELEASE_TYPE-$codename-$image.img"
+              echo ">> [$(date)] Copying $image.img" to "$ZIP_DIR/$zipsubdir/$recovery_name" >> "$DEBUG_LOG"
+              cp "$image.img" "$ZIP_DIR/$zipsubdir/$recovery_name" &>> "$DEBUG_LOG"
+              files_to_hash+=( "$recovery_name" )
             fi
-          done &>> "$DEBUG_LOG"
+          done
+          cd "$ZIP_DIR/$zipsubdir"
+          for f in "${files_to_hash[@]}"; do
+            sha256sum "$f" > "$ZIP_DIR/$zipsubdir/$f.sha256sum"
+          done
           cd "$source_dir"
           build_successful=true
         else
@@ -378,7 +406,7 @@ for branch in ${BRANCH_NAME//,/ }; do
         fi
         if [ -f /root/userscripts/post-build.sh ]; then
           echo ">> [$(date)] Running post-build.sh for $codename" >> "$DEBUG_LOG"
-          /root/userscripts/post-build.sh "$codename" $build_successful &>> "$DEBUG_LOG" || echo ">> [$(date)] Warning: post-build.sh failed!"
+          /root/userscripts/post-build.sh "$codename" $build_successful "$branch" &>> "$DEBUG_LOG" || echo ">> [$(date)] Warning: post-build.sh failed!"
         fi
         echo ">> [$(date)] Finishing build for $codename" | tee -a "$DEBUG_LOG"
 

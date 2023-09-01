@@ -1,4 +1,4 @@
-FROM ubuntu:22.04@sha256:20fa2d7bb4de7723f542be5923b06c4d704370f0390e4ae9e1c833c8785644c1
+FROM ubuntu:22.04@sha256:67211c14fa74f070d27cc59d69a7fa9aeff8e28ea118ef3babc295a0428a6d21
 LABEL maintainer="Nicola Corna <nicola@corna.info>"
 
 # Environment variables
@@ -113,6 +113,9 @@ ENV DELETE_OLD_LOGS 0
 # build type of your builds (user|userdebug|eng)
 ENV BUILD_TYPE "userdebug"
 
+# we can use --depth=1 here
+ENV REPO_INIT_ARGS ""
+
 # You can optionally specify a USERSCRIPTS_DIR volume containing these scripts:
 #  * begin.sh, run at the very beginning
 #  * before.sh, run after the syncing and patching, before starting the builds
@@ -143,7 +146,7 @@ RUN mkdir -p $MIRROR_DIR $SRC_DIR $TMP_DIR $CCACHE_DIR $ZIP_DIR $LMANIFEST_DIR \
 ############################
 RUN apt-get -qq update && \
       apt-get install -y bc bison bsdmainutils build-essential ccache cgpt clang \
-      cron curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick \
+      cron curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf imagemagick \
       kmod lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool \
       libncurses5 libncurses5-dev libsdl1.2-dev libssl-dev libxml2 \
       libxml2-utils lsof lzop maven openjdk-8-jdk pngcrush procps python3 \
